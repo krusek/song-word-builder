@@ -236,10 +236,18 @@ function trimSections(sections) {
   }
 }
 
+// Proclaim's own input box replaces every real newline with U+2029
+// (paragraph separator) when copied out, rather than dropping it or turning
+// it into a space. Undo that first so normal line-based parsing just works.
+function normalizeLineBreaks(text) {
+  return text.replace(/\u2029/g, '\n');
+}
+
 function parsePiece(text) {
-  const strict = parseStrict(text);
+  const normalized = normalizeLineBreaks(text);
+  const strict = parseStrict(normalized);
   if (Object.keys(strict).length >= 2) return strict;
-  const loose = parseFlattened(text);
+  const loose = parseFlattened(normalized);
   return Object.keys(loose).length > Object.keys(strict).length ? loose : strict;
 }
 
@@ -368,17 +376,18 @@ document.getElementById('inspectWhitespace').addEventListener('click', () => {
 function annotateWhitespace(text) {
   let html = '';
   for (const ch of text) {
-    if (ch === ' ') {
-      html += '<mark class="sp" title="regular space">&middot;</mark>';
-    } else if (ch === ' ') {
-      html += '<mark class="nbsp" title="non-breaking space U+00A0">NBSP</mark>';
-    } else if (ch === '\t') {
-      html += '<mark class="tab" title="tab">TAB</mark>';
-    } else if (ch === '\n') {
+    const code = ch.codePointAt(0);
+    if (code === 0x0A) {
       html += '\n';
-    } else if (ch < ' ' || (ch >= ' ' && ch <= '‏') || ch === ' ' || ch === ' ' || ch === '﻿') {
-      const code = 'U+' + ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0');
-      html += `<mark class="other" title="${code}">${code}</mark>`;
+    } else if (code === 0x20) {
+      html += '<mark class="sp" title="regular space (U+0020)">&middot;</mark>';
+    } else if (code === 0xA0) {
+      html += '<mark class="nbsp" title="non-breaking space (U+00A0)">NBSP</mark>';
+    } else if (code === 0x09) {
+      html += '<mark class="tab" title="tab (U+0009)">TAB</mark>';
+    } else if (code < 0x20 || code === 0x2028 || code === 0x2029 || code === 0xFEFF || (code >= 0x2000 && code <= 0x200F)) {
+      const label = 'U+' + code.toString(16).toUpperCase().padStart(4, '0');
+      html += `<mark class="other" title="${label}">${label}</mark>`;
     } else {
       html += ch.replace(/&/g, '&amp;').replace(/</g, '&lt;');
     }
@@ -391,7 +400,8 @@ function annotateWhitespace(text) {
 // keyword starts a new line, and runs of 2+ spaces become a blank line.
 function reinsertLineBreaks(text) {
   const globalRe = new RegExp('\\b(' + HEADER_TOKEN + ')\\b', 'gi');
-  let out = text.replace(globalRe, (match) => '\n' + match.trim() + '\n');
+  let out = normalizeLineBreaks(text);
+  out = out.replace(globalRe, (match) => '\n' + match.trim() + '\n');
   out = out.replace(/[ \t ]{2,}/g, '\n\n');
   out = out.split('\n').map(l => l.trim()).join('\n');
   out = out.replace(/\n{3,}/g, '\n\n');
