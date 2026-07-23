@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Song Word Builder</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --border: #ccc;
+    --bg-soft: rgba(127,127,127,0.08);
+    --accent: #3a6df0;
+    --warn: #c0392b;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    margin: 0;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    line-height: 1.4;
+    display: flex;
+    flex-direction: column;
+    padding: 1rem 1.25rem;
+  }
+  header { flex: 0 0 auto; margin-bottom: 0.75rem; }
+  h1 { font-size: 1.3rem; margin: 0 0 0.15rem; }
+  p.sub { margin: 0; color: #888; font-size: 0.85rem; }
+
+  .controls {
+    margin: 0.6rem 0;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    flex: 0 0 auto;
+  }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+  button.secondary {
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+  }
+  .checkbox-row { font-size: 0.9rem; display: flex; align-items: center; gap: 0.4rem; }
+
+  .layout {
+    flex: 1 1 auto;
+    display: grid;
+    grid-template-columns: 1fr 1.3fr;
+    gap: 1rem;
+    min-height: 0;
+  }
+  @media (max-width: 800px) {
+    .layout { grid-template-columns: 1fr; }
+  }
+
+  .col { display: flex; flex-direction: column; min-height: 0; gap: 0.75rem; }
+  label { display: block; font-weight: 600; margin-bottom: 0.3rem; font-size: 0.9rem; }
+
+  .field { display: flex; flex-direction: column; min-height: 0; }
+  #arrangement-field { flex: 0 0 auto; }
+  #piece-field { flex: 1 1 auto; min-height: 0; }
+
+  textarea {
+    width: 100%;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    padding: 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    resize: none;
+    background: var(--bg-soft);
+  }
+  #arrangement { height: 70px; }
+  #piece { flex: 1 1 auto; min-height: 120px; }
+
+  #output-wrap {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  #output {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    white-space: pre-wrap;
+    font-size: 1.02rem;
+  }
+  .section-label {
+    font-weight: 700;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+    color: var(--accent);
+    margin-top: 1.1rem;
+    margin-bottom: 0.2rem;
+  }
+  .section-label:first-child { margin-top: 0; }
+  .blank-slide {
+    text-align: center;
+    color: #999;
+    font-size: 0.8rem;
+    margin: 0.8rem 0;
+    letter-spacing: 0.15em;
+  }
+  .missing {
+    color: var(--warn);
+    font-weight: 600;
+    margin: 0.6rem 0;
+  }
+  .warnings {
+    margin-top: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--warn);
+    flex: 0 0 auto;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Song Word Builder</h1>
+  <p class="sub">Type an arrangement and a piece definition. Lyrics update live on the right.</p>
+</header>
+
+<div class="controls">
+  <button class="secondary" id="loadExample">Load Example</button>
+  <button class="secondary" id="clearAll">Clear</button>
+  <label class="checkbox-row"><input type="checkbox" id="showLabels" checked> Show section labels</label>
+</div>
+
+<div class="layout">
+  <div class="col">
+    <div class="field" id="arrangement-field">
+      <label for="arrangement">Arrangement (comma-separated)</label>
+      <textarea id="arrangement" placeholder="Blank, Verse 1, Chorus, Verse 2, Chorus, Blank"></textarea>
+    </div>
+    <div class="field" id="piece-field">
+      <label for="piece">Piece Definition (labelled sections)</label>
+      <textarea id="piece" placeholder="Verse 1&#10;Lyric line one&#10;Lyric line two&#10;&#10;Chorus&#10;Chorus lyric line"></textarea>
+    </div>
+  </div>
+
+  <div id="output-wrap">
+    <label>Output</label>
+    <div id="output">Output will appear here.</div>
+    <div id="warnings" class="warnings"></div>
+  </div>
+</div>
+
+<script>
+const HEADER_RE = /^(verse|chorus|bridge|tag|refrain|intro|outro|pre-?chorus|post-?chorus|interlude|ending|instrumental|vamp|coda|turnaround)\s*\d*$/i;
+
+function parsePiece(text) {
+  const lines = text.split(/\r?\n/);
+  const sections = {};
+  let current = null;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (HEADER_RE.test(line)) {
+      current = { label: line, lines: [] };
+      sections[line.toLowerCase()] = current;
+    } else if (current) {
+      current.lines.push(raw.trimEnd());
+    }
+  }
+  for (const key in sections) {
+    const arr = sections[key].lines;
+    while (arr.length && arr[0].trim() === '') arr.shift();
+    while (arr.length && arr[arr.length - 1].trim() === '') arr.pop();
+  }
+  return sections;
+}
+
+function parseArrangement(text) {
+  return text.split(',').map(s => s.trim()).filter(s => s.length > 0);
+}
+
+function generate() {
+  const arrangementText = document.getElementById('arrangement').value;
+  const pieceText = document.getElementById('piece').value;
+  const showLabels = document.getElementById('showLabels').checked;
+
+  const sections = parsePiece(pieceText);
+  const tokens = parseArrangement(arrangementText);
+
+  const output = document.getElementById('output');
+  const warningsEl = document.getElementById('warnings');
+  output.innerHTML = '';
+  const missing = [];
+
+  if (tokens.length === 0) {
+    output.textContent = 'Enter an arrangement above.';
+    warningsEl.textContent = '';
+    return;
+  }
+
+  for (const token of tokens) {
+    if (token.toLowerCase() === 'blank') {
+      const div = document.createElement('div');
+      div.className = 'blank-slide';
+      div.textContent = '· BLANK ·';
+      output.appendChild(div);
+      continue;
+    }
+    const sec = sections[token.toLowerCase()];
+    if (!sec) {
+      missing.push(token);
+      const div = document.createElement('div');
+      div.className = 'missing';
+      div.textContent = `⚠ "${token}" not found in piece definition`;
+      output.appendChild(div);
+      continue;
+    }
+    if (showLabels) {
+      const labelDiv = document.createElement('div');
+      labelDiv.className = 'section-label';
+      labelDiv.textContent = sec.label;
+      output.appendChild(labelDiv);
+    }
+    const bodyDiv = document.createElement('div');
+    bodyDiv.textContent = sec.lines.join('\n');
+    output.appendChild(bodyDiv);
+  }
+
+  warningsEl.textContent = missing.length
+    ? `Missing sections: ${[...new Set(missing)].join(', ')}`
+    : '';
+}
+
+const EXAMPLE_ARRANGEMENT = "Blank, Verse 1, Chorus, Verse 2, Chorus, Blank, Bridge, Chorus, Tag, Blank,";
+
+const EXAMPLE_PIECE = `Verse 1
+This is the first line of verse one
+This is the second line of verse one
+
+Verse 2
+This is the first line of verse two
+This is the second line of verse two
+
+Chorus
+This is the first line of the chorus
+This is the second line of the chorus
+
+Bridge
+This is the first line of the bridge
+This is the second line of the bridge
+
+Tag
+This is the tag line, repeated for emphasis`;
+
+const arrangementEl = document.getElementById('arrangement');
+const pieceEl = document.getElementById('piece');
+const showLabelsEl = document.getElementById('showLabels');
+
+['input', 'keyup', 'change', 'paste'].forEach(evt => {
+  arrangementEl.addEventListener(evt, generate);
+  pieceEl.addEventListener(evt, generate);
+});
+showLabelsEl.addEventListener('change', generate);
+
+// Fallback poller in case some input path (e.g. dictation, some IME/extension setups)
+// doesn't fire standard input events.
+let lastArrangement = arrangementEl.value;
+let lastPiece = pieceEl.value;
+let lastShowLabels = showLabelsEl.checked;
+setInterval(() => {
+  if (arrangementEl.value !== lastArrangement || pieceEl.value !== lastPiece || showLabelsEl.checked !== lastShowLabels) {
+    lastArrangement = arrangementEl.value;
+    lastPiece = pieceEl.value;
+    lastShowLabels = showLabelsEl.checked;
+    generate();
+  }
+}, 200);
+
+document.getElementById('clearAll').addEventListener('click', () => {
+  arrangementEl.value = '';
+  pieceEl.value = '';
+  generate();
+});
+document.getElementById('loadExample').addEventListener('click', () => {
+  arrangementEl.value = EXAMPLE_ARRANGEMENT;
+  pieceEl.value = EXAMPLE_PIECE;
+  generate();
+});
+</script>
+</body>
+</html>
