@@ -395,18 +395,8 @@ function annotateWhitespace(text) {
   return html;
 }
 
-// Rewrites flattened text (headers and lyric lines run together, separated
-// only by single/double spaces) into text with real line breaks: each header
-// keyword starts a new line, and runs of 2+ spaces become a blank line.
 function reinsertLineBreaks(text) {
-  const globalRe = new RegExp('\\b(' + HEADER_TOKEN + ')\\b', 'gi');
-  let out = normalizeLineBreaks(text);
-  out = out.replace(globalRe, (match) => '\n' + match.trim() + '\n');
-  out = out.replace(/[ \t ]{2,}/g, '\n\n');
-  out = out.split('\n').map(l => l.trim()).join('\n');
-  out = out.replace(/\n{3,}/g, '\n\n');
-  out = out.replace(/^\n+/, '').replace(/\n+$/, '');
-  return out;
+  return normalizeLineBreaks(text);
 }
 
 document.getElementById('clearAll').addEventListener('click', () => {
