@@ -69,6 +69,9 @@
   .field { display: flex; flex-direction: column; min-height: 0; }
   #arrangement-field { flex: 0 0 auto; }
   #piece-field { flex: 1 1 auto; min-height: 0; }
+  .field-header { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+  .field-header label { margin-bottom: 0.3rem; }
+  button.small { padding: 0.25rem 0.6rem; font-size: 0.78rem; }
 
   textarea {
     width: 100%;
@@ -147,7 +150,10 @@
       <textarea id="arrangement" placeholder="Blank, Verse 1, Chorus, Verse 2, Chorus, Blank"></textarea>
     </div>
     <div class="field" id="piece-field">
-      <label for="piece">Piece Definition (labelled sections)</label>
+      <div class="field-header">
+        <label for="piece">Piece Definition (labelled sections)</label>
+        <button class="secondary small" id="fixLineBreaks" type="button">Add new lines back</button>
+      </div>
       <textarea id="piece" placeholder="Verse 1&#10;Lyric line one&#10;Lyric line two&#10;&#10;Chorus&#10;Chorus lyric line"></textarea>
     </div>
   </div>
@@ -316,6 +322,24 @@ setInterval(() => {
     generate();
   }
 }, 200);
+
+document.getElementById('fixLineBreaks').addEventListener('click', () => {
+  pieceEl.value = reinsertLineBreaks(pieceEl.value);
+  generate();
+});
+
+// Rewrites flattened text (headers and lyric lines run together, separated
+// only by single/double spaces) into text with real line breaks: each header
+// keyword starts a new line, and runs of 2+ spaces become a blank line.
+function reinsertLineBreaks(text) {
+  const globalRe = new RegExp('\\b(' + HEADER_TOKEN + ')\\b', 'gi');
+  let out = text.replace(globalRe, (match) => '\n' + match.trim() + '\n');
+  out = out.replace(/ {2,}/g, '\n\n');
+  out = out.split('\n').map(l => l.trim()).join('\n');
+  out = out.replace(/\n{3,}/g, '\n\n');
+  out = out.replace(/^\n+/, '').replace(/\n+$/, '');
+  return out;
+}
 
 document.getElementById('clearAll').addEventListener('click', () => {
   arrangementEl.value = '';
