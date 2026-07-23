@@ -160,27 +160,60 @@
 </div>
 
 <script>
-const HEADER_RE = /^(verse|chorus|bridge|tag|refrain|intro|outro|pre-?chorus|post-?chorus|interlude|ending|instrumental|vamp|coda|turnaround)\s*\d*$/i;
+const HEADER_TOKEN = '(?:verse|chorus|bridge|tag|refrain|intro|outro|pre-?chorus|post-?chorus|interlude|ending|instrumental|vamp|coda|turnaround)\\s*\\d*';
+const HEADER_LINE_RE = new RegExp('^' + HEADER_TOKEN + '$', 'i');
 
-function parsePiece(text) {
-  const lines = text.split(/\r?\n/);
+function parseStrict(text) {
   const sections = {};
   let current = null;
-  for (const raw of lines) {
+  for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
-    if (HEADER_RE.test(line)) {
+    if (HEADER_LINE_RE.test(line)) {
       current = { label: line, lines: [] };
       sections[line.toLowerCase()] = current;
     } else if (current) {
       current.lines.push(raw.trimEnd());
     }
   }
+  trimSections(sections);
+  return sections;
+}
+
+// Some sources (e.g. copying straight out of Proclaim's own input box) collapse
+// real line breaks into single spaces, and blank lines into double spaces,
+// instead of preserving newlines. Scan the raw text for header keywords
+// wherever they occur (not just at the start of a line) and split on those,
+// so it doesn't matter whether a blank line originally preceded each header.
+function parseFlattened(text) {
+  const globalRe = new RegExp('\\b(' + HEADER_TOKEN + ')\\b', 'gi');
+  const matches = [...text.matchAll(globalRe)];
+  const sections = {};
+  for (let i = 0; i < matches.length; i++) {
+    const m = matches[i];
+    const label = m[1].replace(/\s+/g, ' ').trim();
+    const start = m.index + m[0].length;
+    const end = i + 1 < matches.length ? matches[i + 1].index : text.length;
+    const body = text.slice(start, end).replace(/ {2,}/g, '\n\n');
+    const lines = body.split(/\r?\n/).map(l => l.trim());
+    sections[label.toLowerCase()] = { label, lines };
+  }
+  trimSections(sections);
+  return sections;
+}
+
+function trimSections(sections) {
   for (const key in sections) {
     const arr = sections[key].lines;
     while (arr.length && arr[0].trim() === '') arr.shift();
     while (arr.length && arr[arr.length - 1].trim() === '') arr.pop();
   }
-  return sections;
+}
+
+function parsePiece(text) {
+  const strict = parseStrict(text);
+  if (Object.keys(strict).length >= 2) return strict;
+  const loose = parseFlattened(text);
+  return Object.keys(loose).length > Object.keys(strict).length ? loose : strict;
 }
 
 function parseArrangement(text) {
