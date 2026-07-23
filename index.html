@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Song Word Builder</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
   :root {
     color-scheme: light dark;
@@ -157,7 +158,10 @@
 <div class="controls">
   <button class="secondary" id="loadExample">Load Example</button>
   <button class="secondary" id="clearAll">Clear</button>
+  <button class="secondary" id="importPdfBtn">Import PDF&hellip;</button>
+  <input type="file" id="pdfInput" accept="application/pdf" style="display:none">
   <label class="checkbox-row"><input type="checkbox" id="showLabels" checked> Show section labels</label>
+  <span id="pdfStatus" style="font-size:0.85rem; color:#888;"></span>
 </div>
 
 <div class="layout">
@@ -398,6 +402,175 @@ function annotateWhitespace(text) {
 function reinsertLineBreaks(text) {
   return normalizeLineBreaks(text);
 }
+
+// ---- PDF import ----
+// Renders each page to a canvas and samples the pixel color under each text
+// run (from getTextContent) to classify it red vs. black, since pdf.js text
+// items don't carry color directly. Red bracketed lines like "[Verse 1: Dustin]"
+// become section headers (the "who" after the colon is discarded); red text
+// inside an otherwise-black line is dropped as ad-lib/direction, keeping only
+// the black words. Repeated header names are reused as-is when their lyric
+// content is identical to an earlier occurrence, and suffixed ("Interlude 2")
+// when it genuinely differs, so the arrangement can reference the right one.
+if (window.pdfjsLib) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+
+// Classify a text run as red or black by rendering the page to a canvas and
+// averaging the pixel color *within that run's bounding box, ignoring
+// near-white background pixels*. Excluding the background is what makes
+// this reliable: a plain average across the whole box gets diluted by all
+// the surrounding white space (especially for short runs), washing out the
+// red/black difference. Averaging only the non-background ("ink") pixels
+// removes that dilution, so runs consistently and clearly separate into a
+// red cluster (~240, ~50, ~50) and a black cluster (~60, ~60, ~60).
+async function extractColoredLines(pdf) {
+  const allLines = [];
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const scale = 3;
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext('2d');
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    const textContent = await page.getTextContent();
+
+    const items = textContent.items
+      .filter(it => it.str.trim().length > 0)
+      .map(it => {
+        const combined = pdfjsLib.Util.transform(viewport.transform, it.transform);
+        const x = combined[4];
+        const yBaseline = combined[5];
+        const fontHeight = Math.hypot(combined[2], combined[3]) || 10;
+        // it.width is in page-space points (unscaled by viewport); multiply
+        // by the page's own render scale, not a glyph-transform-derived
+        // factor — that double-applies font-size scaling and produces a box
+        // many times too wide, bleeding into unrelated text later in the row.
+        const w = Math.max(2, Math.round((it.width || 0) * scale));
+        const h = Math.max(2, Math.round(fontHeight * 1.1));
+        const boxX = Math.max(0, Math.round(x));
+        const boxY = Math.max(0, Math.round(yBaseline - fontHeight));
+        const bw = Math.min(w, canvas.width - boxX);
+        const bh = Math.min(h, canvas.height - boxY);
+        let isRed = false;
+        if (bw > 0 && bh > 0) {
+          const data = ctx.getImageData(boxX, boxY, bw, bh).data;
+          let sumR = 0, sumG = 0, sumB = 0, n = 0;
+          for (let i = 0; i < data.length; i += 4) {
+            const r = data[i], g = data[i + 1], b = data[i + 2];
+            if (r > 250 && g > 250 && b > 250) continue;
+            sumR += r; sumG += g; sumB += b; n++;
+          }
+          if (n > 0) {
+            const avgR = sumR / n, avgG = sumG / n, avgB = sumB / n;
+            isRed = (avgR - avgG) > 20 && (avgR - avgB) > 20;
+          }
+        }
+        return { str: it.str, x, y: yBaseline, isRed };
+      });
+
+    // Canvas/viewport space has y increasing downward, so an ascending sort
+    // by y gives top-to-bottom reading order. Cluster into rows first (a
+    // single comparator that judges "same row" isn't a valid total order
+    // and scrambles items with a wide range of y-coordinates), then sort
+    // each row left-to-right by x.
+    items.sort((a, b) => a.y - b.y);
+    const rows = [];
+    for (const it of items) {
+      const row = rows.find(r => Math.abs(it.y - r.y) < 4);
+      if (row) {
+        row.items.push(it);
+      } else {
+        rows.push({ y: it.y, items: [it] });
+      }
+    }
+    for (const row of rows) {
+      row.items.sort((a, b) => a.x - b.x);
+      allLines.push({ y: row.y, spans: row.items.map(it => ({ text: it.str, isRed: it.isRed })) });
+    }
+  }
+  return allLines;
+}
+
+function parsePdfLines(lines) {
+  const segments = [];
+  let current = null;
+  for (const line of lines) {
+    const fullText = line.spans.map(s => s.text).join(' ').replace(/\s+/g, ' ').trim();
+    const allRed = line.spans.every(s => s.isRed);
+    const headerMatch = allRed && fullText.match(/^\[(.+)\]$/);
+    if (headerMatch) {
+      const inner = headerMatch[1];
+      const colonIdx = inner.indexOf(':');
+      const label = (colonIdx === -1 ? inner : inner.slice(0, colonIdx)).trim();
+      current = { label, lines: [] };
+      segments.push(current);
+      continue;
+    }
+    const blackText = line.spans.filter(s => !s.isRed).map(s => s.text).join('').replace(/\s+/g, ' ').trim();
+    if (blackText && current) {
+      current.lines.push(blackText);
+    }
+  }
+  return segments;
+}
+
+function buildProclaimText(segments) {
+  const variantsByLabel = new Map();
+  const pieceOrder = [];
+  const arrangementTokens = [];
+
+  for (const seg of segments) {
+    const body = seg.lines.join('\n').trim();
+    if (!variantsByLabel.has(seg.label)) variantsByLabel.set(seg.label, []);
+    const variants = variantsByLabel.get(seg.label);
+    let match = variants.find(v => v.body === body);
+    if (!match) {
+      const variantLabel = variants.length === 0 ? seg.label : `${seg.label} ${variants.length + 1}`;
+      match = { body, variantLabel };
+      variants.push(match);
+      pieceOrder.push({ label: variantLabel, lines: seg.lines });
+    }
+    arrangementTokens.push(match.variantLabel);
+  }
+
+  const arrangementText = arrangementTokens.join(', ');
+  const pieceText = pieceOrder.map(s => s.label + '\n' + s.lines.join('\n')).join('\n\n');
+  return { arrangementText, pieceText };
+}
+
+async function handlePdfFile(file) {
+  const statusEl = document.getElementById('pdfStatus');
+  statusEl.textContent = 'Reading PDF…';
+  try {
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    const lines = await extractColoredLines(pdf);
+    const segments = parsePdfLines(lines);
+    if (segments.length === 0) {
+      statusEl.textContent = 'No red [Section: Who] headers found — check the PDF matches the expected format.';
+      return;
+    }
+    const { arrangementText, pieceText } = buildProclaimText(segments);
+    arrangementEl.value = arrangementText;
+    pieceEl.value = pieceText;
+    generate();
+    statusEl.textContent = `Imported ${segments.length} segment${segments.length === 1 ? '' : 's'} from ${pdf.numPages} page${pdf.numPages === 1 ? '' : 's'}.`;
+  } catch (err) {
+    statusEl.textContent = 'Could not read that PDF: ' + err.message;
+  }
+}
+
+document.getElementById('importPdfBtn').addEventListener('click', () => {
+  document.getElementById('pdfInput').click();
+});
+document.getElementById('pdfInput').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (file) handlePdfFile(file);
+  e.target.value = '';
+});
 
 document.getElementById('clearAll').addEventListener('click', () => {
   arrangementEl.value = '';
